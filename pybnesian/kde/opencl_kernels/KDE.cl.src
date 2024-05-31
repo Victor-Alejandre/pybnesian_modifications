@@ -1,0 +1,925 @@
+/* This code assumes column major data for matrices. */
+
+#define IDX(i, j, rows) (i) + ((j)*(rows))
+#define ROW(idx, rows) (idx) % (rows)
+#define COL(idx, rows) (idx) / (rows)
+
+#define MAX_ASSIGN(n1, n2) n1 = max((n1), (n2))
+#define SUM_ASSIGN(n1, n2) n1 += (n2)
+
+/**begin repeat
+ * #dt = double, float#
+ * #SQRT1_2 = M_SQRT1_2, M_SQRT1_2_F#,
+ * #LN2 = M_LN2, M_LN2_F#
+ */
+
+
+/**begin repeat1
+ * #operation = max, sum#
+ * #operation_macro = MAX_ASSIGN, SUM_ASSIGN#
+ */
+
+__kernel void @operation@1d_@dt@(__global @dt@ *restrict input,
+                                 __private uint input_length,
+                                 __local @dt@ *localMaxs,
+                                 __global @dt@ *restrict output,
+                                 __private uint output_offset) {
+    uint global_id = get_global_id(0);
+    uint local_id = get_local_id(0);
+    uint group_size = get_local_size(0);
+    uint group_id = get_group_id(0);
+    uint num_groups = get_num_groups(0);
+
+    if (group_id == num_groups-1) {
+        group_size = input_length - group_id*group_size;
+
+        if (global_id < input_length) {
+            localMaxs[local_id] = input[global_id];
+        }
+    }
+    else {
+        localMaxs[local_id] = input[global_id];
+    }
+
+    while (group_size > 1) {
+        int stride = group_size / 2;
+        barrier(CLK_LOCAL_MEM_FENCE);
+        if (group_size % 2 == 0) {
+            if (local_id < stride) {
+                @operation_macro@(localMaxs[local_id], localMaxs[local_id + stride]);
+            }
+
+            group_size = group_size / 2;
+        }
+        else {
+            if (local_id < stride) {
+                @operation_macro@(localMaxs[local_id + 1], localMaxs[local_id + 1 + stride]);
+            }
+            group_size = (group_size / 2) + 1;
+        }
+    }
+
+    if (local_id == 0) {
+        output[output_offset + group_id] = localMaxs[0];
+    }
+}
+
+__kernel void @operation@_mat_cols_@dt@(__global @dt@ *restrict mat,
+                                        __private uint mat_rows,
+                                        __local @dt@ *localMaxs,
+                                        __global @dt@ *restrict output,
+                                        __private uint output_offset) {
+    uint global_id_row = get_global_id(0);
+    uint global_id_col = get_global_id(1);
+    uint local_id = get_local_id(0);
+    uint group_size = get_local_size(0);
+    uint group_id = get_group_id(0);
+    uint num_groups = get_num_groups(0);
+
+
+    if (group_id == num_groups-1) {
+        group_size = mat_rows - group_id*group_size;
+
+        if (global_id_row < mat_rows) {
+            localMaxs[local_id] = mat[IDX(global_id_row, global_id_col, mat_rows)];
+        }
+    }
+    else {
+        localMaxs[local_id] = mat[IDX(global_id_row, global_id_col, mat_rows)];
+    }
+
+    while (group_size > 1) {
+        int stride = group_size / 2;
+        barrier(CLK_LOCAL_MEM_FENCE);
+        if (group_size % 2 == 0) {
+            if (local_id < stride) {
+                @operation_macro@(localMaxs[local_id], localMaxs[local_id + stride]);
+            }
+            group_size = group_size / 2;
+        }
+        else {
+            if (local_id < stride) {
+                @operation_macro@(localMaxs[local_id+1], localMaxs[local_id+1+stride]);
+            }
+            group_size = (group_size / 2) + 1;
+        }
+    }
+
+    if (local_id == 0) {
+        output[IDX(group_id, output_offset + global_id_col, num_groups)] = localMaxs[0];
+    }
+}
+
+/**end repeat1**/
+
+__kernel void logsumexp_coeffs_@dt@(__global @dt@ *restrict input,
+                                    __private uint input_rows,
+                                    __global @dt@ *restrict max) {
+    uint idx = get_global_id(0);
+    uint col = COL(idx, input_rows);
+    input[idx] = exp(input[idx] - max[col]);
+}
+
+__kernel void solve_@dt@(__global @dt@ *restrict diff_matrix,
+                        __private uint diff_matrix_rows, 
+                        __private uint matrices_cols,
+                        __global @dt@ *restrict cholesky_matrix) {
+    uint r = get_global_id(0);
+    
+    for (uint c = 0; c < matrices_cols; c++) {
+        for (uint i = 0; i < c; i++) {
+            diff_matrix[IDX(r, c, diff_matrix_rows)] -= cholesky_matrix[IDX(c, i, matrices_cols)] * diff_matrix[IDX(r, i, diff_matrix_rows)];
+        }
+        diff_matrix[IDX(r, c, diff_matrix_rows)] /= cholesky_matrix[IDX(c, c, matrices_cols)];
+    }
+}
+
+__kernel void square_@dt@(__global @dt@ *restrict m) {
+    uint idx = get_global_id(0);
+    double d = m[idx];
+    m[idx] = d * d;
+}
+
+__kernel void logl_values_1d_mat_@dt@(__global @dt@ *restrict train_vector,
+                                      __private uint train_rows,
+                                      __global @dt@ *restrict test_vector,
+                                      __private uint test_offset,
+                                      __constant @dt@ *standard_deviation,
+                                      __private @dt@ lognorm_factor,
+                                      __global @dt@ *restrict result) {
+    int i = get_global_id(0);
+    int train_idx = ROW(i, train_rows);
+    int test_idx = COL(i, train_rows);
+    @dt@ d = (train_vector[train_idx] - test_vector[test_offset + test_idx]) / standard_deviation[0];
+
+    result[i] = (-0.5*d*d) + lognorm_factor;
+}
+
+__kernel void add_logl_values_1d_mat_@dt@(__global @dt@ *restrict train_vector,
+                                          __private uint train_rows,
+                                          __global @dt@ *restrict test_vector,
+                                          __private uint test_offset,
+                                          __constant @dt@ *standard_deviation,
+                                          __global @dt@ *restrict result) {
+    int i = get_global_id(0);
+    int train_idx = ROW(i, train_rows);
+    int test_idx = COL(i, train_rows);
+    @dt@ d = (train_vector[train_idx] - test_vector[test_offset + test_idx]) / standard_deviation[0];
+
+    result[i] += -0.5*d*d;
+}
+
+
+__kernel void substract_@dt@(__global @dt@ *restrict training_matrix,
+                             __private uint training_physical_rows,
+                             __private uint training_offset,
+                             __private uint training_rows,
+                             __global @dt@ *restrict test_matrix,
+                             __private uint test_physical_rows,
+                             __private uint test_offset,
+                             __private uint test_row_idx,
+                             __global @dt@ *restrict res) {
+    uint i = get_global_id(0);
+    uint r = ROW(i, training_rows) + training_offset;
+    uint c = COL(i, training_rows);
+
+    res[i] = test_matrix[IDX(test_offset + test_row_idx, c, test_physical_rows)] - training_matrix[IDX(r, c, training_physical_rows)];
+}
+
+
+__kernel void logl_values_mat_column_@dt@(__global @dt@ *restrict square_data,
+                                          __private uint square_cols,
+                                          __global @dt@ *restrict sol_mat,
+                                          __private uint sol_rows,
+                                          __private uint sol_col_idx,
+                                          __private @dt@ lognorm_factor) {
+    uint test_idx = get_global_id(0);
+    uint square_rows = get_global_size(0);
+    
+    uint sol_idx = IDX(test_idx, sol_col_idx, sol_rows);
+
+    @dt@ summation = square_data[IDX(test_idx, 0, square_rows)];
+    for (uint i = 1; i < square_cols; i++) {
+        summation += square_data[IDX(test_idx, i, square_rows)];
+    }
+
+    sol_mat[sol_idx] = (-0.5 * summation) + lognorm_factor;
+}
+
+__kernel void logl_values_mat_row_@dt@(__global @dt@ *restrict square_data,
+                                       __private uint square_cols,
+                                       __global @dt@ *restrict sol_mat,
+                                       __private uint sol_rows,
+                                       __private uint sol_row_idx,
+                                       __private @dt@ lognorm_factor) {
+    uint test_idx = get_global_id(0);
+    uint square_rows = get_global_size(0);
+    
+    uint sol_idx = IDX(sol_row_idx, test_idx, sol_rows);
+
+    @dt@ summation = square_data[IDX(test_idx, 0, square_rows)];
+    for (uint i = 1; i < square_cols; i++) {
+        summation += square_data[IDX(test_idx, i, square_rows)];
+    }
+
+    sol_mat[sol_idx] = (-0.5 * summation) + lognorm_factor;
+}
+
+__kernel void finish_lse_offset_@dt@(__global @dt@ *restrict res,
+                                     __private uint res_offset,
+                                     __global @dt@ *restrict max_vec) {
+    uint idx = get_global_id(0);
+    res[idx + res_offset] = log(res[idx + res_offset]) + max_vec[idx];
+}
+
+
+__kernel void substract_vectors_@dt@(__global @dt@ *restrict v1, __global @dt@ *restrict v2) {
+    uint idx = get_global_id(0);
+    v1[idx] -= v2[idx];
+}
+
+__kernel void exp_elementwise_@dt@(__global @dt@ *restrict mat) {
+    uint idx = get_global_id(0);
+
+    mat[idx] = exp(mat[idx]);
+}
+
+
+// A variation of the code in https://community.khronos.org/t/is-there-any-opencl-library-having-prefix-sum/3945/4.
+// This version works in the columns of a matrix and exp() the input values before performing the prefix sum.
+// It is best explained in Blelloch, 1990 "Prefix Sums and Their Applications":
+//  https://www.cs.cmu.edu/~guyb/papers/Ble93.pdf.
+// See also https://developer.nvidia.com/gpugems/gpugems3/part-vi-gpu-computing/chapter-39-parallel-prefix-sum-scan-cuda
+__kernel void accum_sum_mat_cols_@dt@(__global @dt@ *restrict mat,
+                                      __private uint mat_rows,
+                                      __local @dt@ *local_block,
+                                      __global @dt@ *restrict sums) {
+    uint row_id = get_global_id(0);
+    uint col_id = get_global_id(1);
+    uint local_id = get_local_id(0);
+    uint group_size = get_local_size(0);
+    uint group_id = get_group_id(0);
+    uint num_groups = get_num_groups(0);
+
+    if (2*row_id+1 < mat_rows) {
+        local_block[2*local_id] = mat[IDX(2*row_id, col_id, mat_rows)];
+        local_block[2*local_id+1] = mat[IDX(2*row_id+1, col_id, mat_rows)];
+    } else {
+        local_block[2*local_id] = 0;
+        local_block[2*local_id+1] = 0;
+    }
+
+    barrier (CLK_LOCAL_MEM_FENCE);
+
+    if (group_id == num_groups-1) {
+        local_block[mat_rows - 2*group_id*group_size - 1] = mat[IDX(mat_rows-1, col_id, mat_rows)];
+    }
+
+	uint offset = 1;
+	/* build the sum in place up the tree */
+	// for (int d = block_size >> 1; d > 0; d >>= 1)
+	for (uint d = group_size; d > 0; d /= 2)
+	{
+		barrier (CLK_LOCAL_MEM_FENCE);
+
+		if (local_id < d)
+		{
+			uint ai = offset * (2 * local_id + 1) - 1;
+			uint bi = offset * (2 * local_id + 2) - 1;
+
+			local_block[bi] += local_block[ai];
+		}
+		offset *= 2;
+	}
+
+	barrier(CLK_LOCAL_MEM_FENCE);
+
+	/* store the value in sum buffer before making it to 0 */
+	sums[IDX(group_id, col_id, get_num_groups(0))] = local_block[2*group_size - 1];
+
+	barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);
+
+	// /* scan back down the tree */
+
+	// /* clear the last element */
+	local_block[2*group_size - 1] = 0;
+
+	/* traverse down the tree building the scan in the place */
+	for (uint d = 1; d <= group_size; d *= 2)
+	{
+		// offset >>= 1;
+		offset /= 2;
+		barrier(CLK_LOCAL_MEM_FENCE);
+
+		if (local_id < d)
+		{
+			uint ai = offset * (2 * local_id + 1) - 1;
+			uint bi = offset * (2 * local_id + 2) - 1;
+
+			@dt@ t = local_block[ai];
+			local_block[ai] = local_block[bi];
+			local_block[bi] += t;
+		}
+	}
+
+	barrier(CLK_LOCAL_MEM_FENCE);
+
+    // write the results back to global memory
+
+    if ((2*row_id+1) < mat_rows) {
+        mat[IDX(2*row_id, col_id, mat_rows)] = local_block[2*local_id];
+        mat[IDX(2*row_id+1, col_id, mat_rows)] = local_block[2*local_id+1];
+    } else if (2*row_id < mat_rows) {
+        mat[IDX(2*row_id, col_id, mat_rows)] = local_block[2*local_id];
+    }
+}
+
+__kernel void add_accum_sum_mat_cols_@dt@(__global @dt@ *restrict mat,
+                                          __private uint mat_rows,
+                                          __private uint mat_offset,
+                                          __private uint size_per_group,
+                                          __private uint num_groups,
+                                          __global @dt@ *restrict sums) {
+    
+
+    uint row_id = get_global_id(0);
+    uint col_id = get_global_id(1);
+
+    mat[IDX(row_id + mat_offset, col_id, mat_rows)] += sums[IDX((row_id / size_per_group)+1, col_id, num_groups)];
+}
+
+__kernel void normalize_accum_sum_mat_cols_@dt@(__global @dt@ *restrict mat,
+                                                __private uint mat_rows,
+                                                __global @dt@ *restrict sums) {
+
+    uint row_id = get_global_id(0);
+    uint col_id = get_global_id(1);
+
+    mat[IDX(row_id + 1, col_id, mat_rows)] /= sums[col_id];
+}
+
+
+__kernel void find_random_indices_@dt@(__global @dt@ *restrict mat,
+                                       __private uint mat_rows,
+                                       __private uint mat_offset,
+                                       __global @dt@ *restrict random_numbers,
+                                       __global int *restrict indices) {
+    
+    int row_id = get_global_id(0);
+    int col_id = get_global_id(1);
+    
+    @dt@ rn = random_numbers[mat_offset + col_id];
+    if (mat[IDX(row_id, col_id, mat_rows)] <= rn && rn < mat[IDX(row_id+1, col_id, mat_rows)])
+        indices[mat_offset + col_id] = row_id;
+}
+
+__kernel void conditional_means_1d_@dt@(__global @dt@ *restrict train_mat,
+                                        __private uint train_physical_rows,
+                                        __global @dt@ *restrict test_vector,
+                                        __private uint test_physical_rows,
+                                        __private uint test_offset,
+                                        __constant @dt@ *transform_mean,
+                                        __global @dt@ *restrict result) {
+    int i = get_global_id(0);
+    int train_idx = ROW(i, train_physical_rows);
+    int test_idx = COL(i, train_physical_rows);
+    
+    result[i] = train_mat[IDX(train_idx, 0, train_physical_rows)] + 
+                            transform_mean[0]*(
+                                            test_vector[IDX(test_offset + test_idx, 0, test_physical_rows)] -
+                                            train_mat[IDX(train_idx, 1, train_physical_rows)]
+                                            );
+}
+
+__kernel void conditional_means_column_@dt@(__global @dt@ *restrict training_data,
+                                            __private uint training_data_physical_rows,
+                                            __global @dt@ *restrict substract_evidence,
+                                            __private uint substract_evidence_physical_rows,
+                                            __global @dt@ *restrict transform_vector,
+                                            __private uint evidence_columns,
+                                            __global @dt@ *restrict res,
+                                            __private uint res_col_idx,
+                                            __private uint res_physical_rows) {
+    uint i = get_global_id(0);
+    @dt@ mean = training_data[IDX(i, 0, training_data_physical_rows)];
+
+    for (uint j = 0; j < evidence_columns; ++j) {
+        mean += transform_vector[j]*substract_evidence[IDX(i, j, substract_evidence_physical_rows)];
+    }
+
+    res[IDX(i, res_col_idx, res_physical_rows)] = mean;
+}
+
+__kernel void conditional_means_row_@dt@(__global @dt@ *restrict training_data,
+                                         __private uint training_data_physical_rows,
+                                         __global @dt@ *restrict substract_evidence,
+                                         __private uint substract_evidence_physical_rows,
+                                         __global @dt@ *restrict transform_vector,
+                                         __private uint evidence_columns,
+                                         __global @dt@ *restrict res,
+                                         __private uint res_row_idx,
+                                         __private uint res_physical_rows) {
+    uint i = get_global_id(0);
+    @dt@ mean = training_data[IDX(res_row_idx, 0, training_data_physical_rows)];
+
+    for (uint j = 0; j < evidence_columns; ++j) {
+        mean -= transform_vector[j]*substract_evidence[IDX(i, j, substract_evidence_physical_rows)];
+    }
+
+    res[IDX(res_row_idx, i, res_physical_rows)] = mean;
+}
+
+__kernel void univariate_normal_cdf_@dt@(__global @dt@ *restrict means,
+                                         __private uint means_physical_rows,
+                                         __global @dt@ *restrict x,
+                                         __private uint x_offset,
+                                         __private @dt@ inv_std,
+                                         __private @dt@ inv_N,
+                                         __global @dt@ *restrict cdf_mat) {
+    uint i = get_global_id(0);
+
+    int means_idx = ROW(i, means_physical_rows);
+    int x_idx = COL(i, means_physical_rows);
+
+    cdf_mat[i] = inv_N*(0.5*erfc(@SQRT1_2@ * inv_std * -(x[x_offset + x_idx] - means[means_idx])));
+}
+
+__kernel void normal_cdf_@dt@(__global @dt@ *restrict means,
+                              __private uint means_physical_rows,
+                              __global @dt@ *restrict x,
+                              __private uint x_offset,
+                              __private @dt@ inv_std) {
+    uint i = get_global_id(0);
+    int col_idx = COL(i, means_physical_rows);
+
+    means[i] = 0.5*erfc(@SQRT1_2@ * inv_std * (means[i] - x[x_offset + col_idx]));
+}
+
+__kernel void product_elementwise_@dt@(__global @dt@ *restrict mat1, __global @dt@ *restrict mat2) {
+    uint i = get_global_id(0);
+    mat1[i] *= mat2[i];
+}
+
+__kernel void division_elementwise_@dt@(__global @dt@ *restrict mat1,
+                                        __private uint mat1_offset,
+                                        __global @dt@ *restrict mat2) {
+    uint i = get_global_id(0);
+    mat1[mat1_offset + i] /= mat2[i];
+}
+
+// https://stackoverflow.com/questions/40950460/how-to-convert-triangular-matrix-indexes-in-to-row-column-coordinates
+__kernel void sum_ucv_1d_@dt@(__global @dt@ *restrict data,
+                              __private uint index_offset,
+                              __global @dt@ *restrict h,
+                              __private @dt@ lognorm_2h,
+                              __private @dt@ lognorm_h,
+                              __global @dt@ *restrict sum2h,
+                              __global @dt@ *restrict sumh) {
+    unsigned int i = get_global_id(0);
+    double ii = get_global_id(0) + index_offset + 1;
+
+    unsigned int i1 = (unsigned int) ceil(sqrt(2.0 * ii + 0.25) - 0.5);
+    unsigned int i2 = (unsigned int) (ii - (i1-1) * i1 * 0.5 - 1);
+
+    @dt@ d = (data[i1] - data[i2]) / h[0];
+    d = d*d;
+
+    sum2h[i] += exp(-0.25*d + lognorm_2h);
+    sumh[i] += exp(-0.5*d + lognorm_h);
+}
+
+// https://stackoverflow.com/questions/40950460/how-to-convert-triangular-matrix-indexes-in-to-row-column-coordinates
+__kernel void triangular_substract_mat_@dt@(__global @dt@ *restrict data,
+                                            __private uint data_physical_rows,
+                                            __private uint data_cols,
+                                            __private uint index_offset,
+                                            __private uint res_num_rows,
+                                            __global @dt@ *restrict res) {
+
+    uint i = get_global_id(0);
+
+    double ii = ROW(i, res_num_rows) + index_offset + 1;
+    uint c = COL(i, res_num_rows);
+
+    unsigned int r1 = (unsigned int) ceil(sqrt(2.0 * ii + 0.25) - 0.5);
+    unsigned int r2 = (unsigned int) (ii - (r1-1) * r1 * 0.5 - 1);
+
+    res[i] = data[IDX(r1, c, data_physical_rows)] - data[IDX(r2, c, data_physical_rows)];
+}
+
+__kernel void sum_ucv_mat_@dt@(__global @dt@ *restrict square_mat,
+                               __private uint square_cols,
+                               __private @dt@ lognorm_2H,
+                               __private @dt@ lognorm_H,
+                               __global @dt@ *restrict sum2H,
+                               __global @dt@ *restrict sumH) {
+    uint r = get_global_id(0);
+    uint square_rows = get_global_size(0);
+
+    @dt@ summation = square_mat[IDX(r, 0, square_rows)];
+    for (uint i = 1; i < square_cols; i++) {
+        summation += square_mat[IDX(r, i, square_rows)];
+    }
+
+    sum2H[r] += exp(-0.25*summation + lognorm_2H);
+    sumH[r] += exp(-0.5*summation + lognorm_H);
+}
+
+// https://stackoverflow.com/questions/40950460/how-to-convert-triangular-matrix-indexes-in-to-row-column-coordinates
+__kernel void ucv_diag_@dt@(__global @dt@ *restrict data,
+                            __private uint index_offset,
+                            __global @dt@ *restrict h,
+                            __global @dt@ *restrict tmph) {
+    unsigned int i = get_global_id(0);
+    double ii = get_global_id(0) + index_offset + 1;
+
+    unsigned int i1 = (unsigned int) ceil(sqrt(2.0 * ii + 0.25) - 0.5);
+    unsigned int i2 = (unsigned int) (ii - (i1-1) * i1 * 0.5 - 1);
+
+    @dt@ d = (data[i1] - data[i2]) / h[0];
+    d = d*d;
+
+    tmph[i] = d;
+}
+
+// https://stackoverflow.com/questions/40950460/how-to-convert-triangular-matrix-indexes-in-to-row-column-coordinates
+__kernel void sum_ucv_diag_@dt@(__global @dt@ *restrict data,
+                                __private uint data_physical_rows,
+                                __private uint index_offset,
+                                __global @dt@ *restrict h,
+                                __private uint h_index,
+                                __global @dt@ *restrict tmph) {
+    unsigned int i = get_global_id(0);
+    double ii = get_global_id(0) + index_offset + 1;
+
+    unsigned int i1 = (unsigned int) ceil(sqrt(2.0 * ii + 0.25) - 0.5);
+    unsigned int i2 = (unsigned int) (ii - (i1-1) * i1 * 0.5 - 1);
+
+    @dt@ d = (data[IDX(i1, h_index, data_physical_rows)] - data[IDX(i2, h_index, data_physical_rows)]) / h[h_index];
+    d = d*d;
+
+    tmph[i] += d;
+}
+
+// https://stackoverflow.com/questions/40950460/how-to-convert-triangular-matrix-indexes-in-to-row-column-coordinates
+__kernel void copy_ucv_diag_@dt@(__global @dt@ *restrict tmph,
+                                 __private @dt@ lognorm_2H,
+                                 __private @dt@ lognorm_H,
+                                 __global @dt@ *restrict sum2H,
+                                 __global @dt@ *restrict sumH) {
+    unsigned int i = get_global_id(0);
+
+    sum2H[i] += exp(-0.25*tmph[i] + lognorm_2H);
+    sumH[i] += exp(-0.5*tmph[i] + lognorm_H);
+}
+
+__kernel void eta_1_@dt@(__global @dt@ *restrict diff_matrix,
+                        __private uint diff_matrix_rows, 
+                        __private uint matrices_cols,
+                        __global @dt@ *restrict inv_bandwidth) {
+    uint r = get_global_id(0);
+    
+    for (uint c = 0; c < matrices_cols; c++) {
+        diff_matrix[IDX(r, c, diff_matrix_rows)] = diff_matrix[IDX(r, 0, diff_matrix_rows)] * inv_bandwidth[IDX(c, 0, matrices_cols)];
+        for (uint i = 1; i < matrices_cols; i++) {
+            diff_matrix[IDX(r, c, diff_matrix_rows)] += inv_bandwidth[IDX(c, i, matrices_cols)] * diff_matrix[IDX(r, i, diff_matrix_rows)];
+        }
+    }
+}
+
+__kernel void gaussian_density_@dt@(__global @dt@ *restrict square_mat,
+                               __private uint square_cols,
+                               __private @dt@ gaussian_const,
+                               __global @dt@ *restrict density_values) {
+    uint r = get_global_id(0);
+    uint square_rows = get_global_size(0);
+
+    @dt@ summation = square_mat[IDX(r, 0, square_rows)];
+    for (uint i = 1; i < square_cols; i++) {
+        summation += square_mat[IDX(r, i, square_rows)];
+    }
+
+    density_values[r] += exp(-0.5*summation + gaussian_const);
+}
+
+
+
+__kernel void sum_bcv_mat_@dt@(__global @dt@ *restrict result,
+                                __private uint numCols,
+                                __private uint numRows,
+                                __global @dt@ *restrict psi4) {
+    uint gid_col = get_global_id(0);
+
+    if (gid_col < numCols) {
+        // Initialize sum for the current column
+        @dt@ sum = 0;
+
+        // Compute sum of the current column
+        for (uint i = 0; i < numRows; ++i) {
+            sum += result[IDX(i, gid_col, numRows)];
+        }
+
+        // Store the sum in psi4
+        psi4[gid_col] += sum;
+    }
+}
+
+
+__kernel void compute_dot_product_@dt@(
+    __global @dt@ *restrict vec_H, // Vectorized matrix H
+    __global @dt@ *restrict psi, // Flattened fourth derivative psi
+    __private uint dimensionality,            
+     __global @dt@ *restrict result) {
+
+    // Compute global index for current work item
+    uint idx = get_global_id(0);
+
+    uint vec_h_dimension = dimensionality * dimensionality;
+    uint p = idx / vec_h_dimension;
+    uint q = idx % vec_h_dimension;
+    // Compute dot product for current work item
+    @dt@ dot_product = vec_H[p] * vec_H[q] * psi[idx];
+
+    // Accumulate dot product
+    result[idx] = dot_product;
+    
+
+
+}
+
+__kernel void sum_bcv_1d_@dt@(__global @dt@ *restrict data,
+                              __private uint index_offset,
+                              __global @dt@ *restrict h,
+                               uint derivate_order,
+                              __private @dt@ log_gaussian_const,
+                              __global @dt@ *restrict psi_r) {
+    unsigned int i = get_global_id(0);
+    double ii = get_global_id(0) + index_offset + 1;
+
+    unsigned int i1 = (unsigned int) ceil(sqrt(2.0 * ii + 0.25) - 0.5);
+    unsigned int i2 = (unsigned int) (ii - (i1-1) * i1 * 0.5 - 1);
+
+    @dt@ h_pow = pow(h[0], (@dt@)2.0);
+    @dt@ r_derivate = (data[i1] - data[i2]) / h_pow;
+    @dt@ r_derivate_last = 1;
+    @dt@ d = (data[i1] - data[i2]) / h_pow;
+    @dt@ derivate = 0;
+    for (uint r = 1; r < derivate_order; r++){
+        derivate = r_derivate * d - r * 1/ h_pow * r_derivate_last;
+        r_derivate_last = r_derivate;
+        r_derivate = derivate;
+    }
+    d = (data[i1] - data[i2]) / (h[0]);
+    d = d*d;
+    psi_r[i] = derivate * exp(-0.5 * d + log_gaussian_const);
+}
+
+__kernel void vecG_kron_Idr_psi_@dt@(__global const @dt@ *restrict G,
+                                 __global const @dt@ *restrict psi, 
+                                 __global @dt@ *restrict result, 
+                                 uint size, 
+                                 uint d, 
+                                 uint r) {
+    int i = get_global_id(0);
+    if (i < size) {
+        uint dimension = (d * d);
+        float derivate_length = pow((float)d, (float)r);
+        for (uint coordinate = 0; coordinate < dimension; coordinate++){
+            float coor = i + (coordinate * derivate_length);
+            result[i] += G[coordinate] * psi[(int)coor];
+        }
+        result[i] *= 0.5;
+    }
+}
+
+__kernel void sum_mse_@dt@(__global @dt@ *restrict psi_r_zero,
+                             __private const uint data_size,
+                              __global @dt@ *restrict result,
+                               __global @dt@ *restrict mse) {
+
+    // Compute global index for current work item
+    int idx = get_global_id(0);
+
+
+    mse[idx] += 1 / (data_size * data_size) * psi_r_zero[idx] * psi_r_zero[idx] + result[idx] * result[idx];
+
+}
+
+
+__kernel void ab_criterion_1d_@dt@(__global @dt@ *restrict data,
+                              __global @dt@ *restrict h,
+                               uint derivate_order,
+                               uint data_size,
+                              __private @dt@ log_gaussian_const,
+                              __global @dt@ *restrict psi_r_zero,
+                              __global @dt@ *restrict mse) { //hay que pasar buffer
+    
+    @dt@ r_derivate = 0;
+    @dt@ r_derivate_last = 1;
+    @dt@ derivate = 0;
+    @dt@ d = data[0];
+    for (uint r = 1; r < derivate_order; r++){
+        derivate = r_derivate * d - r * 1/h[0] * r_derivate_last;
+        r_derivate_last = r_derivate;
+        r_derivate = derivate;
+    }
+    mse[0] = derivate;
+    mse[0] *= exp(-0.5 * d + log_gaussian_const) / data_size;
+    mse[0] *= mse[0];
+    mse[0] += psi_r_zero[0] * h[0] * 0.5 * psi_r_zero[0] * h[0] * 0.5;
+
+}
+
+__kernel void PI_1d_@dt@(__global @dt@ *restrict h,
+                              __global @dt@ *restrict psi_r_zero,
+                              __global @dt@ *restrict result) {
+    
+    result[0] += h[0] * psi_r_zero[0];
+
+}
+
+
+__kernel void scv_1d_@dt@(__global @dt@ *restrict data,
+                             __global @dt@ *restrict h2_2g,
+                             __global @dt@ *restrict h_2g,
+                             __global @dt@ *restrict g,
+                             __private uint index_offset,
+                             __private @dt@ log_gaussian_const_2h_2g,
+                             __private @dt@ log_gaussian_const_h_2g,
+                             __private @dt@ log_gaussian_const_2g,
+                             __global @dt@ *restrict result) {
+    
+    unsigned int i = get_global_id(0);
+    double ii = get_global_id(0) + index_offset + 1;
+
+    unsigned int i1 = (unsigned int) ceil(sqrt(2.0 * ii + 0.25) - 0.5);
+    unsigned int i2 = (unsigned int) (ii - (i1-1) * i1 * 0.5 - 1);
+
+
+    @dt@ d_2h_2g = (data[i1] - data[i2]) / (h2_2g[0]);
+    @dt@ d_h_2g = (data[i1] - data[i2]) / (h_2g[0]);
+    @dt@ d_2g = (data[i1] - data[i2]) / (g[0]);
+    d_2h_2g = d_2h_2g * d_2h_2g;
+    d_h_2g = d_h_2g * d_h_2g;
+    d_2g = d_2g * d_2g;
+
+    result[i] += exp(-0.5 * d_2h_2g + log_gaussian_const_2h_2g);
+    result[i] -= 2 * exp(-0.5 * d_h_2g + log_gaussian_const_h_2g);
+    result[i] += exp(-0.25 * d_2g + log_gaussian_const_2g);
+
+}
+
+
+__kernel void sum_scv_mat_@dt@(__global @dt@ *restrict square_mat_2H_2G,
+                                __global @dt@ *restrict square_mat_H_2G,
+                               __global @dt@ *restrict square_mat_G,
+                               __private uint square_cols,
+                               __private @dt@ log_gaussian_const_2H_2G,
+                               __private @dt@ log_gaussian_const_H_2G,
+                               __private @dt@ log_gaussian_const_2G,
+                               __global @dt@ *restrict result) {
+    uint r = get_global_id(0);
+    uint square_rows = get_global_size(0);
+
+
+    @dt@ summation_2H_2G = square_mat_2H_2G[IDX(r, 0, square_rows)];
+    for (uint i = 1; i < square_cols; i++) {
+        summation_2H_2G += square_mat_2H_2G[IDX(r, i, square_rows)];
+    }
+
+    @dt@ summation_H_2G = square_mat_H_2G[IDX(r, 0, square_rows)];
+    for (uint i = 1; i < square_cols; i++) {
+        summation_H_2G += square_mat_H_2G[IDX(r, i, square_rows)];
+    }
+
+    @dt@ summation_G = square_mat_G[IDX(r, 0, square_rows)];
+    for (uint i = 1; i < square_cols; i++) {
+        summation_G += square_mat_G[IDX(r, i, square_rows)];
+    }
+    result[r] += exp(-0.5 * (summation_2H_2G) + log_gaussian_const_2H_2G);
+    result[r] -= 2 * exp(-0.5 * summation_H_2G + log_gaussian_const_H_2G);
+    result[r] += exp(-0.25 * summation_G + log_gaussian_const_2G);
+    
+}
+
+void kronecker_product_row_@dt@(__global @dt@* A, int A_size, __global @dt@* B, int B_size, __global @dt@* result, int result_row, int result_rows) {
+    for (int j = 0; j < A_size; j++) {
+        for (int k = 0; k < B_size; k++) {
+            result[IDX(result_row, j * B_size + k, result_rows)] = A[IDX(result_row, j, result_rows)] * B[IDX(result_row, k, result_rows)];
+        }
+    }
+}
+
+int calculate_vector_@dt@(__private int* vector, int r, int i, int d, int k, int s) {
+    // Calculate the coordinates
+    for (int j = 1; j <= r; j++) {
+        float coordinate1 = (i) / pow((double)d, (double)j - 1.0);
+        float coordinate2 = (i) / pow((double)d, (double)j);
+        vector[j - 1] = floor(coordinate1) - d * floor(coordinate2) + 1;
+    }
+
+    // Permute the k and s coordinates
+    int temp = vector[k];
+    vector[k] = vector[s];
+    vector[s] = temp;
+
+    // Compute t
+    int t = 1;
+    for (int j = 0; j < r; j++) {
+        t += (int)vector[j] * (int)pow((double)d, (double)j);
+    }
+
+    // Return t
+    return t;
+}
+
+__kernel void complete_higher_derivate_@dt@(__global @dt@ *restrict diff_matrix,
+                        __private uint diff_matrix_rows, 
+                        __private uint matrices_cols,
+                         __private uint derivate_order,
+                         __private uint derivate_size,
+                        __global @dt@ *restrict density_values,
+                        __global @dt@ *restrict vec_inv_bandwidth_h,
+                        __global @dt@ *restrict w_new,
+                        __global @dt@ *restrict u_k_1,
+                        __global @dt@ *restrict u_k_2,
+                        __global @dt@ *restrict result) {
+    uint row = get_global_id(0);
+    __private int derivate_vector[6];
+
+    for (int i = 0; i< matrices_cols; i++){
+        u_k_1[IDX(row, i, diff_matrix_rows)] = diff_matrix[IDX(row, i, diff_matrix_rows)];
+        u_k_2[IDX(row, i, diff_matrix_rows)] = diff_matrix[IDX(row, i, diff_matrix_rows)];
+    }
+
+    kronecker_product_row_@dt@(diff_matrix, (int)matrices_cols, u_k_1, (int)matrices_cols, result, row, diff_matrix_rows);
+
+    for (int i = 0; i < matrices_cols * matrices_cols; i++){
+        result[IDX(row, i, diff_matrix_rows)] -= vec_inv_bandwidth_h[i];
+    }
+
+    for (int i = 0; i < derivate_size; i++){
+        w_new[IDX(row, i, diff_matrix_rows)] = 0.0;
+    }
+
+    for (int i = 0; i < matrices_cols * matrices_cols; i++){
+        w_new[IDX(row, i, diff_matrix_rows)] = result[IDX(row, i, diff_matrix_rows)];
+    }
+
+    for (int i = 0; i < matrices_cols * matrices_cols; i++){
+        w_new[IDX(row, calculate_vector_@dt@(derivate_vector, 2, i, matrices_cols, 0, 1) - 1, diff_matrix_rows)] += result[IDX(row, i, diff_matrix_rows)];
+        result[IDX(row, i, diff_matrix_rows)] = w_new[IDX(row, i, diff_matrix_rows)] / 2.0;
+        u_k_1[IDX(row, i, diff_matrix_rows)] = result[IDX(row, i, diff_matrix_rows)];
+    }
+    
+
+
+
+    for (int r = 3; r<= derivate_order; r++){
+
+        for (int i = 0; i<derivate_size; i++){
+            w_new[IDX(row, i, diff_matrix_rows)] = 0.0;
+        }
+        int d_r = (int)pow((double)matrices_cols, (double)r);
+
+        kronecker_product_row_@dt@(diff_matrix, (int)matrices_cols, u_k_1, (int)pow((double)matrices_cols, (double)r - 1.0), result, row, diff_matrix_rows);
+
+        int length_u_k_2 = (int)pow((double)matrices_cols, (double)r - 2.0);
+        int d_2 =  matrices_cols * matrices_cols;
+        for (int i = 0; i < d_2; i++){
+            for (int k = 0; k < length_u_k_2; k ++){
+                    result[IDX(row, i * d_2 + k, diff_matrix_rows)] -= (r - 1) * vec_inv_bandwidth_h[i] * u_k_2[IDX(row, k, diff_matrix_rows)]; //vec_inv must be in column-major order
+            }
+        
+    }
+
+        for (int j = 0; j < r - 1; j++){
+            for (int i = 0; i < d_r; i++){
+                w_new[IDX(row, calculate_vector_@dt@(derivate_vector, r, i, matrices_cols, j, r - 1) - 1, diff_matrix_rows)] += result[IDX(row, i, diff_matrix_rows)];
+            }
+        }
+
+        length_u_k_2 = (int)pow((double)matrices_cols, (double)r - 1.0);
+        for (int i= 0; i < length_u_k_2; i ++){
+                    u_k_2[IDX(row, i, diff_matrix_rows)] = u_k_1[IDX(row, i, diff_matrix_rows)];
+            }
+
+        for (int i = 0; i < d_r; i++){
+                w_new[IDX(row, i, diff_matrix_rows)] += result[IDX(row, i, diff_matrix_rows)];
+                result[IDX(row, i, diff_matrix_rows)] = w_new[IDX(row, i, diff_matrix_rows)] / r;
+                u_k_1[IDX(row, i, diff_matrix_rows)] = result[IDX(row, i, diff_matrix_rows)];
+            }
+    }
+    int d_r = (int)pow((double)matrices_cols, (double)derivate_order);
+    for (uint i = 0; i < d_r; i++){
+        result[IDX(row, i, diff_matrix_rows)] *= density_values[row];
+    }
+    
+
+}
+
+
+
+
+
+/**end repeat**/
