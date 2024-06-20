@@ -913,10 +913,10 @@ cl::Buffer PIScorer::psi_r_impl(const Matrix<typename ArrowType::c_type, Dynamic
     auto n_distances = N * (N - 1) / 2;
     size_t instances_per_iteration;
     if (derivate_order > 4){
-        instances_per_iteration = std::min(static_cast<size_t>(1000), n_distances);
+        instances_per_iteration = std::min(static_cast<size_t>(100), n_distances);
     }
     else {
-        instances_per_iteration = std::min(static_cast<size_t>(10000), n_distances);
+        instances_per_iteration = std::min(static_cast<size_t>(1000), n_distances);
     }
     
     auto iterations =
