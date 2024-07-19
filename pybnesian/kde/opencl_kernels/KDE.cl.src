@@ -692,6 +692,23 @@ __kernel void vecG_kron_Idr_psi_@dt@(__global const @dt@ *restrict G,
     }
 }
 
+__kernel void vecG_kron_Idr_psi_scv_@dt@(__global const @dt@ *restrict G,
+                                 __global const @dt@ *restrict psi, 
+                                 __global @dt@ *restrict result, 
+                                 uint size, 
+                                 uint d, 
+                                 uint r) {
+    int i = get_global_id(0);
+    if (i < size) {
+        uint dimension = (d * d);
+        float derivate_length = pow((float)d, (float)r);
+        for (uint coordinate = 0; coordinate < dimension; coordinate++){
+            float coor = i + (coordinate * derivate_length);
+            result[i] += G[coordinate] * psi[(int)coor];
+        }
+    }
+}
+
 __kernel void sum_mse_@dt@(__global @dt@ *restrict psi_r_zero,
                              __private const uint data_size,
                               __global @dt@ *restrict result,
@@ -700,8 +717,22 @@ __kernel void sum_mse_@dt@(__global @dt@ *restrict psi_r_zero,
     // Compute global index for current work item
     int idx = get_global_id(0);
 
+    @dt@ w_coordinate = (1.0 / data_size  * psi_r_zero[idx]  + result[idx]) ;
+    mse[idx] += w_coordinate * w_coordinate ;
 
-    mse[idx] += 1 / (data_size * data_size) * psi_r_zero[idx] * psi_r_zero[idx] + result[idx] * result[idx];
+}
+
+__kernel void sum_mse_scv_@dt@(__global @dt@ *restrict psi_r_zero,
+                             __private const uint data_size,
+                              __global @dt@ *restrict result,
+                               __global @dt@ *restrict mse,
+                               __private double pow_constant) {
+
+    // Compute global index for current work item
+    int idx = get_global_id(0);
+
+    @dt@ w_coordinate = (1.0 / data_size  * psi_r_zero[idx] * (@dt@)pow_constant + result[idx]) ;
+    mse[idx] += w_coordinate * w_coordinate ;
 
 }
 
@@ -725,8 +756,32 @@ __kernel void ab_criterion_1d_@dt@(__global @dt@ *restrict data,
     }
     mse[0] = derivate;
     mse[0] *= exp(-0.5 * d + log_gaussian_const) / data_size;
+    mse[0] += psi_r_zero[0] * h[0] * 0.5;
     mse[0] *= mse[0];
-    mse[0] += psi_r_zero[0] * h[0] * 0.5 * psi_r_zero[0] * h[0] * 0.5;
+
+}
+
+__kernel void ab_criterion_1d_scv_@dt@(__global @dt@ *restrict data,
+                              __global @dt@ *restrict h,
+                               uint derivate_order,
+                               uint data_size,
+                              __private @dt@ log_gaussian_const,
+                              __global @dt@ *restrict psi_r_zero,
+                              __global @dt@ *restrict mse) { //hay que pasar buffer
+    
+    @dt@ r_derivate = 0;
+    @dt@ r_derivate_last = 1;
+    @dt@ derivate = 0;
+    @dt@ d = data[0];
+    for (uint r = 1; r < derivate_order; r++){
+        derivate = r_derivate * d - r * 1/(2.0*h[0]) * r_derivate_last;
+        r_derivate_last = r_derivate;
+        r_derivate = derivate;
+    }
+    mse[0] = derivate;
+    mse[0] *= exp(-0.5 * d + log_gaussian_const) * pow((double)2, ((double)derivate_order + 1.0)/(2.0))/ data_size;
+    mse[0] += psi_r_zero[0] * h[0];
+    mse[0] *= mse[0];
 
 }
 

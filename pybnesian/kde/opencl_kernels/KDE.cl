@@ -788,6 +788,23 @@ __kernel void vecG_kron_Idr_psi_double(__global const double *restrict G,
     }
 }
 
+__kernel void vecG_kron_Idr_psi_scv_double(__global const double *restrict G,
+                                 __global const double *restrict psi, 
+                                 __global double *restrict result, 
+                                 uint size, 
+                                 uint d, 
+                                 uint r) {
+    int i = get_global_id(0);
+    if (i < size) {
+        uint dimension = (d * d);
+        float derivate_length = pow((float)d, (float)r);
+        for (uint coordinate = 0; coordinate < dimension; coordinate++){
+            float coor = i + (coordinate * derivate_length);
+            result[i] += G[coordinate] * psi[(int)coor];
+        }
+    }
+}
+
 __kernel void sum_mse_double(__global double *restrict psi_r_zero,
                              __private const uint data_size,
                               __global double *restrict result,
@@ -796,8 +813,22 @@ __kernel void sum_mse_double(__global double *restrict psi_r_zero,
     // Compute global index for current work item
     int idx = get_global_id(0);
 
+    double w_coordinate = (1.0 / data_size  * psi_r_zero[idx]  + result[idx]) ;
+    mse[idx] += w_coordinate * w_coordinate ;
 
-    mse[idx] += 1 / (data_size * data_size) * psi_r_zero[idx] * psi_r_zero[idx] + result[idx] * result[idx];
+}
+
+__kernel void sum_mse_scv_double(__global double *restrict psi_r_zero,
+                             __private const uint data_size,
+                              __global double *restrict result,
+                               __global double *restrict mse,
+                               __private double pow_constant) {
+
+    // Compute global index for current work item
+    int idx = get_global_id(0);
+
+    double w_coordinate = (1.0 / data_size  * psi_r_zero[idx] * (double)pow_constant + result[idx]) ;
+    mse[idx] += w_coordinate * w_coordinate ;
 
 }
 
@@ -821,8 +852,32 @@ __kernel void ab_criterion_1d_double(__global double *restrict data,
     }
     mse[0] = derivate;
     mse[0] *= exp(-0.5 * d + log_gaussian_const) / data_size;
+    mse[0] += psi_r_zero[0] * h[0] * 0.5;
     mse[0] *= mse[0];
-    mse[0] += psi_r_zero[0] * h[0] * 0.5 * psi_r_zero[0] * h[0] * 0.5;
+
+}
+
+__kernel void ab_criterion_1d_scv_double(__global double *restrict data,
+                              __global double *restrict h,
+                               uint derivate_order,
+                               uint data_size,
+                              __private double log_gaussian_const,
+                              __global double *restrict psi_r_zero,
+                              __global double *restrict mse) { //hay que pasar buffer
+    
+    double r_derivate = 0;
+    double r_derivate_last = 1;
+    double derivate = 0;
+    double d = data[0];
+    for (uint r = 1; r < derivate_order; r++){
+        derivate = r_derivate * d - r * 1/(2.0*h[0]) * r_derivate_last;
+        r_derivate_last = r_derivate;
+        r_derivate = derivate;
+    }
+    mse[0] = derivate;
+    mse[0] *= exp(-0.5 * d + log_gaussian_const) * pow((double)2, ((double)derivate_order + 1.0)/(2.0))/ data_size;
+    mse[0] += psi_r_zero[0] * h[0];
+    mse[0] *= mse[0];
 
 }
 
@@ -1791,6 +1846,23 @@ __kernel void vecG_kron_Idr_psi_float(__global const float *restrict G,
     }
 }
 
+__kernel void vecG_kron_Idr_psi_scv_float(__global const float *restrict G,
+                                 __global const float *restrict psi, 
+                                 __global float *restrict result, 
+                                 uint size, 
+                                 uint d, 
+                                 uint r) {
+    int i = get_global_id(0);
+    if (i < size) {
+        uint dimension = (d * d);
+        float derivate_length = pow((float)d, (float)r);
+        for (uint coordinate = 0; coordinate < dimension; coordinate++){
+            float coor = i + (coordinate * derivate_length);
+            result[i] += G[coordinate] * psi[(int)coor];
+        }
+    }
+}
+
 __kernel void sum_mse_float(__global float *restrict psi_r_zero,
                              __private const uint data_size,
                               __global float *restrict result,
@@ -1799,8 +1871,22 @@ __kernel void sum_mse_float(__global float *restrict psi_r_zero,
     // Compute global index for current work item
     int idx = get_global_id(0);
 
+    float w_coordinate = (1.0 / data_size  * psi_r_zero[idx]  + result[idx]) ;
+    mse[idx] += w_coordinate * w_coordinate ;
 
-    mse[idx] += 1 / (data_size * data_size) * psi_r_zero[idx] * psi_r_zero[idx] + result[idx] * result[idx];
+}
+
+__kernel void sum_mse_scv_float(__global float *restrict psi_r_zero,
+                             __private const uint data_size,
+                              __global float *restrict result,
+                               __global float *restrict mse,
+                               __private double pow_constant) {
+
+    // Compute global index for current work item
+    int idx = get_global_id(0);
+
+    float w_coordinate = (1.0 / data_size  * psi_r_zero[idx] * (float)pow_constant + result[idx]) ;
+    mse[idx] += w_coordinate * w_coordinate ;
 
 }
 
@@ -1824,8 +1910,32 @@ __kernel void ab_criterion_1d_float(__global float *restrict data,
     }
     mse[0] = derivate;
     mse[0] *= exp(-0.5 * d + log_gaussian_const) / data_size;
+    mse[0] += psi_r_zero[0] * h[0] * 0.5;
     mse[0] *= mse[0];
-    mse[0] += psi_r_zero[0] * h[0] * 0.5 * psi_r_zero[0] * h[0] * 0.5;
+
+}
+
+__kernel void ab_criterion_1d_scv_float(__global float *restrict data,
+                              __global float *restrict h,
+                               uint derivate_order,
+                               uint data_size,
+                              __private float log_gaussian_const,
+                              __global float *restrict psi_r_zero,
+                              __global float *restrict mse) { //hay que pasar buffer
+    
+    float r_derivate = 0;
+    float r_derivate_last = 1;
+    float derivate = 0;
+    float d = data[0];
+    for (uint r = 1; r < derivate_order; r++){
+        derivate = r_derivate * d - r * 1/(2.0*h[0]) * r_derivate_last;
+        r_derivate_last = r_derivate;
+        r_derivate = derivate;
+    }
+    mse[0] = derivate;
+    mse[0] *= exp(-0.5 * d + log_gaussian_const) * pow((double)2, ((double)derivate_order + 1.0)/(2.0))/ data_size;
+    mse[0] += psi_r_zero[0] * h[0];
+    mse[0] *= mse[0];
 
 }
 
