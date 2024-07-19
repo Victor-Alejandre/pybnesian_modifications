@@ -89,7 +89,7 @@ void UnivariateSCVScore::AB_criterion(const cl::Buffer& training_data,
                                                  cl::Buffer& mse) {
                                                     
     auto& opencl = OpenCLConfig::get();
-    auto& k_ab_criterion_1d = opencl.kernel(OpenCL_kernel_traits<ArrowType>::ab_criterion_1d);
+    auto& k_ab_criterion_1d = opencl.kernel(OpenCL_kernel_traits<ArrowType>::ab_criterion_1d_scv);
     k_ab_criterion_1d.setArg(0, training_data);
     k_ab_criterion_1d.setArg(1, vec_H);
     k_ab_criterion_1d.setArg(2, derivate_order);
@@ -339,7 +339,7 @@ void MultivariateSCVScore::AB_criterion(const cl::Buffer& training_data,
     k_higher_derivate.setArg(10, diff_derivates);
     RAISE_ENQUEUEKERNEL_ERROR(queue.enqueueNDRangeKernel(k_higher_derivate, cl::NullRange, cl::NDRange(1), cl::NullRange));
 
-    auto& k_vecG_kron_Idr_psi = opencl.kernel(OpenCL_kernel_traits<ArrowType>::vecG_kron_Idr_psi);
+    auto& k_vecG_kron_Idr_psi = opencl.kernel(OpenCL_kernel_traits<ArrowType>::vecG_kron_Idr_psi_scv);
     k_vecG_kron_Idr_psi.setArg(0, vec_H);
     k_vecG_kron_Idr_psi.setArg(1, psi_r_plus_2);
     k_vecG_kron_Idr_psi.setArg(2, result_kron_Idr_psi);
@@ -349,12 +349,14 @@ void MultivariateSCVScore::AB_criterion(const cl::Buffer& training_data,
 
     RAISE_ENQUEUEKERNEL_ERROR(
         queue.enqueueNDRangeKernel(k_vecG_kron_Idr_psi, cl::NullRange, cl::NDRange(derivate_cols), cl::NullRange));
-
-    auto& k_sum_mse = opencl.kernel(OpenCL_kernel_traits<ArrowType>::sum_mse);
+    
+    double constant = std::pow(2.0, (derivate_order + 1.0) / 2.0);
+    auto& k_sum_mse = opencl.kernel(OpenCL_kernel_traits<ArrowType>::sum_mse_scv);
     k_sum_mse.setArg(0, diff_derivates);
     k_sum_mse.setArg(1, training_rows);
     k_sum_mse.setArg(2, result_kron_Idr_psi);
     k_sum_mse.setArg(3, mse);
+    k_sum_mse.setArg(4, constant);
 
     RAISE_ENQUEUEKERNEL_ERROR(
         queue.enqueueNDRangeKernel(k_sum_mse, cl::NullRange, cl::NDRange(derivate_cols), cl::NullRange));
@@ -713,7 +715,8 @@ std::tuple<cl::Buffer, cl::Buffer, typename ArrowType::c_type, cl::Buffer> SCVSc
     using CType = typename ArrowType::c_type;
     auto llt_cov = bandwidth.llt();
     auto llt_matrix = llt_cov.matrixLLT();
-    Eigen::Matrix<typename ArrowType::c_type, Dynamic, Dynamic> invert_bandwidth = bandwidth.inverse();
+    Eigen::Matrix<typename ArrowType::c_type, Dynamic, Dynamic> G2 = bandwidth * 2.0;
+    Eigen::Matrix<typename ArrowType::c_type, Dynamic, Dynamic> invert_bandwidth = G2.inverse();
 
     auto& opencl = OpenCLConfig::get();
     auto cholesky = opencl.copy_to_buffer(llt_matrix.data(), d * d);
@@ -1085,10 +1088,10 @@ cl::Buffer SCVScorer::psi_r_impl(const Matrix<typename ArrowType::c_type, Dynami
     auto n_distances = N * (N - 1) / 2;
     size_t instances_per_iteration;
     if (derivate_order > 4){
-        instances_per_iteration = std::min(static_cast<size_t>(100), n_distances);
+        instances_per_iteration = std::min(static_cast<size_t>(1000), n_distances);
     }
     else {
-        instances_per_iteration = std::min(static_cast<size_t>(1000), n_distances);
+        instances_per_iteration = std::min(static_cast<size_t>(10000), n_distances);
     }
     
     auto iterations =
