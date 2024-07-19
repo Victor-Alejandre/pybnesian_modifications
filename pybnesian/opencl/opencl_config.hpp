@@ -74,10 +74,13 @@ struct OpenCL_kernel_traits<arrow::DoubleType> {
     inline constexpr static const char* compute_dot_product = "compute_dot_product_double";
     inline constexpr static const char* sum_bcv_1d = "sum_bcv_1d_double";
     inline constexpr static const char* sum_mse = "sum_mse_double";
+    inline constexpr static const char* sum_mse_scv = "sum_mse_scv_double";
     inline constexpr static const char* expand_psi_r = "expand_psi_r_double";
     inline constexpr static const char* ab_criterion_1d = "ab_criterion_1d_double";
+    inline constexpr static const char* ab_criterion_1d_scv = "ab_criterion_1d_scv_double";
     inline constexpr static const char* scv_1d = "scv_1d_double";
     inline constexpr static const char* vecG_kron_Idr_psi= "vecG_kron_Idr_psi_double";
+    inline constexpr static const char* vecG_kron_Idr_psi_scv= "vecG_kron_Idr_psi_scv_double";
     inline constexpr static const char* PI_1d= "PI_1d_double";
     inline constexpr static const char* sum_scv_mat= "sum_scv_mat_double";
 
@@ -124,10 +127,13 @@ struct OpenCL_kernel_traits<arrow::FloatType> {
     inline constexpr static const char* compute_dot_product = "compute_dot_product_float";
     inline constexpr static const char* sum_bcv_1d = "sum_bcv_1d_float";
     inline constexpr static const char* sum_mse = "sum_mse_float";
+    inline constexpr static const char* sum_mse_scv = "sum_mse_scv_float";
     inline constexpr static const char* expand_psi_r = "expand_psi_r_float";
     inline constexpr static const char* ab_criterion_1d = "ab_criterion_1d_float";
+    inline constexpr static const char* ab_criterion_1d_scv = "ab_criterion_1d_scv_float";
     inline constexpr static const char* scv_1d = "scv_1d_float";
     inline constexpr static const char* vecG_kron_Idr_psi= "vecG_kron_Idr_psi_float";
+    inline constexpr static const char* vecG_kron_Idr_psi_scv= "vecG_kron_Idr_psi_scv_float";
     inline constexpr static const char* PI_1d= "PI_1d_float";
     inline constexpr static const char* sum_scv_mat= "sum_scv_mat_float";
 };
